@@ -1,34 +1,30 @@
 #!/bin/bash
-rd="/home/ciaran/Documents/diss"
 
-''' Use rd as a shorthand for the filepath to the raw Illumina reads which helps save time later '''
+source /home/ciaran/anaconda3/bin/activate main
 
-for phage_directory in "$rd"/vB*; do
+script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+
+echo Please input the directory of the raw Illumina reads.
+read rd
+
+for phage_directory in "$rd"/*; do
 	mkdir "$phage_directory"/fastqc 
 	mkdir "$phage_directory"/log
 	touch "$phage_directory"/log/initial_fastqc.txt
 	echo Performing FastQC analysis of initial reads
 	fastqc -quiet -o "$phage_directory"/fastqc "$phage_directory"/*.fastq.gz &>> "$phage_directory"/log/initial_fastqc.txt
 	
-	# The above will create all the relevent folders for each pair of reads and start fastqc analysis
-	
-	read_1=$(ls "$phage_directory"/vB*R1_001.fastq.gz)
-	read_2=$(ls "$phage_directory"/vB*R2_001.fastq.gz)
-	
-	# Gives an alias for the forward and reverse reads to streamline code.
+	read_1=$(ls "$phage_directory"/*1.fastq.gz)
+	read_2=$(ls "$phage_directory"/*2.fastq.gz)
 	
 	touch "$phage_directory"/log/BBtools_initial_clean
 	echo Cleaning reads with BBtools
-	bbduk.sh in1="$read_1" in2="$read_2" out1="$phage_directory"/nophix_1.fastq.gz out2="$phage_directory"/nophix_2.fastq.gz ref="$rd"/BBMap_39.06/bbmap/resources/phix174_ill.ref.fa.gz k=31 hdist=1 stats=phiX_stats.txt &>> "$phage_directory"/log/BBtools_initial_clean
-	bbduk.sh in1="$phage_directory"/nophix_1.fastq.gz in2="$phage_directory"/nophix_2.fastq.gz out1="$phage_directory"/clean_1.fastq.gz out2="$phage_directory"/clean_2.fastq.gz ref="$rd"/BBMap_39.06/bbmap/resources/adapters.fa ktrim=r hdist=1 tpe tbo minlen=100 qtrim=r1 trimq=28 &>> "$phage_directory"/log/BBtools_initial_clean
-	
-	# Reads are trimmed using bbduk above
+	bbduk.sh in1="$read_1" in2="$read_2" out1="$phage_directory"/nophix_1.fastq.gz out2="$phage_directory"/nophix_2.fastq.gz ref="$script_dir"/BBMap_39.06/bbmap/resources/phix174_ill.ref.fa.gz k=31 hdist=1 stats=phiX_stats.txt &>> "$phage_directory"/log/BBtools_initial_clean
+	bbduk.sh in1="$phage_directory"/nophix_1.fastq.gz in2="$phage_directory"/nophix_2.fastq.gz out1="$phage_directory"/clean_1.fastq.gz out2="$phage_directory"/clean_2.fastq.gz ref="$script_dir"/BBMap_39.06/bbmap/resources/adapters.fa ktrim=r hdist=1 tpe tbo minlen=100 qtrim=r1 trimq=28 &>> "$phage_directory"/log/BBtools_initial_clean
 	
 	touch "$phage_directory"/log/clean_fastqc.txt
 	echo Performing FastQC analysis of the cleaned reads
 	fastqc -quiet -o "$phage_directory"/fastqc "$phage_directory"/clean*.fastq.gz &>> "$phage_directory"/log/clean_fastqc.txt
-	
-	# Redo fastqc on the cleaned reads 
 	
 	clean_read_1=$(ls "$phage_directory"/clean_1.fastq.gz)
 	clean_read_2=$(ls "$phage_directory"/clean_2.fastq.gz)
@@ -38,47 +34,29 @@ for phage_directory in "$rd"/vB*; do
 	seqtk sample -s 100 "$clean_read_1" "$coverage" > "$phage_directory"/sub_read_1.fastq
 	seqtk sample -s 100 "$clean_read_2" "$coverage" > "$phage_directory"/sub_read_2.fastq
 	
-	# Sample the reads for use with SPAdes (Using all the reads can cause issues)
-	
 	gzip "$phage_directory"/sub_read_1.fastq
 	gzip "$phage_directory"/sub_read_2.fastq
 	
-	# Zip the subsammpled reads to save disk space
-	
 	source /home/ciaran/anaconda3/bin/activate spades
-	
-	''' Whenever a line like the above is used, it indicates for the program to
-	switch conda environments. The environments are included with the files.'''
 	
 	touch "$phage_directory"/log/spades.txt
 	echo Assembling the genome with SPAdes
 	spades.py --only-assembler --isolate -1 "$phage_directory"/sub_read_1.fastq.gz -2 "$phage_directory"/sub_read_2.fastq.gz -o "$phage_directory"/spades_result &>>"$phage_directory"/log/spades.txt
 	
-	# SPAdes used to assemble the reads
-	
 	source /home/ciaran/anaconda3/bin/activate main
-	
-	# Switch conda environment
 	
 	gunzip "$phage_directory"/sub_read_1.fastq.gz
 	gunzip "$phage_directory"/sub_read_2.fastq.gz
-	
-	# Reads have to be unzipped to be used with bbmap
 	
 	touch "$phage_directory"/log/assembly_validation.txt
 	echo Validating assembly
 	bbmap.sh ref="$phage_directory"/spades_result/contigs.fasta in1="$phage_directory"/sub_read_1.fastq in2="$phage_directory"/sub_read_2.fastq covstats="$phage_directory"/contig_covstats.txt out="$phage_directory"/contig_mapped.sam &>> "$phage_directory"/log/assembly_validation.txt
 	
-	# Validate the reads with bbmap using the SPAdes result as well as the reads.
-	
 	gzip "$phage_directory"/sub_read_1.fastq
 	gzip "$phage_directory"/sub_read_2.fastq
 	
-	# Rezip the reads
 	
 	largest_contig=$(head -1 "$phage_directory"/spades_result/contigs.fasta)
-	
-	# Largest contig is extracted from the results using the above code. It is then given an alias.
 	
 	
 	cat > "$phage_directory"/extract_contig.py <<EOF
@@ -97,8 +75,6 @@ EOF
 
 	python3 "$phage_directory"/extract_contig.py
 
-''' A bespoke python script is created and then run using information derived earlier such as the largest contig
-and will generate a file that contains the largest contig generated by SPAdes '''
 
 	source /home/ciaran/anaconda3/bin/activate sam
 	
@@ -106,8 +82,6 @@ and will generate a file that contains the largest contig generated by SPAdes ''
 	echo Sorting and indexing the mapped reads for use with Pilon
 	samtools view -bS -F4 "$phage_directory"/contig_mapped.sam | samtools sort - -o "$phage_directory"/contig_mapped_sorted.bam &>> "$phage_directory"/log/sam_sort_index.txt
 	samtools index "$phage_directory"/contig_mapped_sorted.bam &>> "$phage_directory"/log/sam_sort_index.txt
-
-# Generates an index of reads mapped to the input genome which is used later.
 
 	source /home/ciaran/anaconda3/bin/activate main
 	
@@ -143,104 +117,77 @@ and will generate a file that contains the largest contig generated by SPAdes ''
 		fi
 	done
 	
-	''' The entire block of code above (after the last comment) is dedicated to allowing
-	multiple runs of Pilon polishing which will autocorrect any errors in the assembly
-	The while loop will run this through until there are no more errors or it has repeated 5 times'''
-	
-	source /home/ciaran/anaconda3/bin/activate sam
+	#~ source /home/ciaran/anaconda3/bin/activate sam
 
-	apc.pl "$phage_directory"/pilon_read.fasta
-	
-	# Uses the apc program to determine whether the contig is circular. If it is, any repeats are discarded.
+	#~ apc.pl "$phage_directory"/pilon_read.fasta
 
-	mv permuted* "$phage_directory"
-	
-	# Moves the output of apc to phage directory
+	#~ mv permuted* "$phage_directory"
 
-	source /home/ciaran/anaconda3/bin/activate main
+	#~ source /home/ciaran/anaconda3/bin/activate main
 	
-	if [ -e $phage_directory/permuted.1.fa ];
-	then
-		phage_to_blast=$phage_directory/permuted.1.fa
-	else
-		phage_to_blast=$phage_directory/pilon_read.fasta
-	fi
+	#~ if [ -e $phage_directory/permuted.1.fa ];
+	#~ then
+		#~ phage_to_blast=$phage_directory/permuted.1.fa
+	#~ else
+		#~ phage_to_blast=$phage_directory/pilon_read.fasta
+	#~ fi
 	
-	# Changes the name of the file that will be put through BLAST depending on the outcome of apc
-	
-	echo 'BLASTing the genome (this will take some time)'
-	blastn -query "$phage_to_blast" -remote -db nr -out "$phage_directory"/blast_result.txt -outfmt 6 -evalue 1e-30
-	
-	# Use BLAST with the contig. Options such as -outfmt and -evalue will tailor the output to your liking
+	#~ echo 'BLASTing the genome (this will take some time)'
+	#~ blastn -query "$phage_to_blast" -remote -db nr -out "$phage_directory"/blast_result.txt -outfmt 6 -evalue 1e-30
 
-	accession_number=$(awk -v line=3 'NR==3 {print $2}' "$phage_directory"/blast_result.txt)
-	echo $accession_number
-	datasets download virus genome accession "$accession_number" --include cds genome
-	
-	#Grabs the accession number of the closest related genome and will download it using NCBI databases.
+	#~ accession_number=$(awk -v line=3 'NR==3 {print $2}' "$phage_directory"/blast_result.txt)
+	#~ echo $accession_number
+	#~ datasets download virus genome accession "$accession_number" --include cds genome
 
-	mv ncbi_dataset.zip "$phage_directory"
-	
-	# Moves the newly downloaded data to our directory.
+	#~ mv ncbi_dataset.zip "$phage_directory"
 
-	unzip "$phage_directory"/ncbi_dataset.zip -d "$phage_directory"
+	#~ unzip "$phage_directory"/ncbi_dataset.zip -d "$phage_directory"
 
-	tail -n +2 "$phage_directory"/ncbi_dataset/data/cds.fna > "$phage_directory"/ncbi_dataset/data/processed_cds.fna
-	
-	# Cuts off a part of the cds file of the closest related gene which allows for easier processing.
+	#~ tail -n +2 "$phage_directory"/ncbi_dataset/data/cds.fna > "$phage_directory"/ncbi_dataset/data/processed_cds.fna
 
-	first_gene_end=$(awk '/^>/ {print NR-1;exit}' "$phage_directory"/ncbi_dataset/data/processed_cds.fna)
-	
-	#Finds the number of characters that constitute the first gene in the cds file.
+	#~ first_gene_end=$(awk '/^>/ {print NR-1;exit}' "$phage_directory"/ncbi_dataset/data/processed_cds.fna)
 
-	sed -n 1,"$first_gene_end"p "$phage_directory"/ncbi_dataset/data/processed_cds.fna > "$phage_directory"/first_gene.fasta
-	
-	# Seperates the first gene of the closest related genome.
+	#~ sed -n 1,"$first_gene_end"p "$phage_directory"/ncbi_dataset/data/processed_cds.fna > "$phage_directory"/first_gene.fasta
 
-	start_of_phage=$(blastn -outfmt "7 sstart" -query  "$phage_directory"/first_gene.fasta -subject "$phage_directory"/permuted.1.fa | grep -v '^#')
-	
-	# BLASTs the first gene of the closest related genome against the assembled genome to find out where the genome begins.
+	#~ start_of_phage=$(blastn -outfmt "7 sstart" -query  "$phage_directory"/first_gene.fasta -subject "$phage_directory"/permuted.1.fa | grep -v '^#')
 
-	cat > "$phage_directory"/reorder.py <<EOF
+	#~ cat > "$phage_directory"/reorder.py <<EOF
 
-from Bio import SeqIO
+#~ from Bio import SeqIO
 
-for contig_record in SeqIO.parse(open('$phage_directory/permuted.1.fa'), 'fasta'):
-    contig = str(contig_record.seq)
+#~ for contig_record in SeqIO.parse(open('$phage_directory/permuted.1.fa'), 'fasta'):
+    #~ contig = str(contig_record.seq)
 
-str1= contig[$start_of_phage:]
-str2= contig[:$start_of_phage]
-str_final='>'+contig_record.id + '\n' + str1 + str2
-with open("$phage_directory/reordered_genome.fasta", "w") as out:
-    out.write(str_final)
+#~ str1= contig[$start_of_phage:]
+#~ str2= contig[:$start_of_phage]
+#~ str_final='>'+contig_record.id + '\n' + str1 + str2
+#~ with open("$phage_directory/reordered_genome.fasta", "w") as out:
+    #~ out.write(str_final)
 
-EOF
+#~ EOF
 
-	python3 "$phage_directory"/reorder.py
-	
-	''' The above will reorder the genome based on the blast results '''
+	#~ python3 "$phage_directory"/reorder.py
 
-	bbmap.sh ref="$phage_directory"/reordered_genome.fasta in1="$phage_directory"/clean_1.fastq in2="$phage_directory"/clean_2.fastq covstats="$phage_directory"/final_covstats.txt out="$phage_directory"/all_reads_contig_mapped.sam
+	#~ bbmap.sh ref="$phage_directory"/reordered_genome.fasta in1="$phage_directory"/clean_1.fastq in2="$phage_directory"/clean_2.fastq covstats="$phage_directory"/final_covstats.txt out="$phage_directory"/all_reads_contig_mapped.sam
 
-	source /home/ciaran/anaconda3/bin/activate sam
+	#~ source /home/ciaran/anaconda3/bin/activate sam
 	
-	samtools view -bS -F4 "$phage_directory"/all_reads_contig_mapped.sam | samtools sort - -o "$phage_directory"/all_reads_contig_mapped_sorted.bam
+	#~ samtools view -bS -F4 "$phage_directory"/all_reads_contig_mapped.sam | samtools sort - -o "$phage_directory"/all_reads_contig_mapped_sorted.bam
 	
-	samtools index "$phage_directory"/all_reads_contig_mapped_sorted.bam
+	#~ samtools index "$phage_directory"/all_reads_contig_mapped_sorted.bam
 	
-	samtools view -bS -f4 "$phage_directory"/all_reads_contig_mapped.sam | samtools sort - -o "$phage_directory"/non_mapped_sorted.bam
+	#~ samtools view -bS -f4 "$phage_directory"/all_reads_contig_mapped.sam | samtools sort - -o "$phage_directory"/non_mapped_sorted.bam
 	
-	samtools fastq "$phage_directory"/non_mapped_sorted.bam > "$phage_directory"/non_mapped_reads.fq
+	#~ samtools fastq "$phage_directory"/non_mapped_sorted.bam > "$phage_directory"/non_mapped_reads.fq
 	
-	source /home/ciaran/anaconda3/bin/activate main
+	#~ source /home/ciaran/anaconda3/bin/activate main
 	
-	pilon --genome "$phage_directory"/reordered_genome.fasta --frags "$phage_directory"/all_reads_contig_mapped_sorted.bam --output "$phage_directory"/final_genome --verbose --changes
+	#~ pilon --genome "$phage_directory"/reordered_genome.fasta --frags "$phage_directory"/all_reads_contig_mapped_sorted.bam --output "$phage_directory"/final_genome --verbose --changes
 	
-	sed "1s/.*/>contig/" "$phage_directory"/final_genome.fasta > "$phage_directory"/prokka_input.fasta
+	#~ sed "1s/.*/>contig/" "$phage_directory"/final_genome.fasta > "$phage_directory"/prokka_input.fasta
 	
-	prokka --outdir "$phage_directory"/prokka --prefix genome --kingdom viruses "$phage_directory"/prokka_input.fasta
+	#~ prokka --outdir "$phage_directory"/prokka --prefix genome --kingdom viruses "$phage_directory"/prokka_input.fasta
 	
-	# The last few lines of code are just running the error checking and autocorrection utilities again.
 	
 	
 done
