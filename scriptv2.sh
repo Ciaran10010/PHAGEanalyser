@@ -192,9 +192,8 @@ EOF
 
 	mkdir -p $script_dir/output/$phage_folder
 	mv $phage_directory/* $script_dir/output/$phage_folder
-	mv $script_dir/output/$phage_folder/$read_1 $phage_directory
-	mv $script_dir/output/$phage_folder/$read_2 $phage_directory
-	
+	mv $script_dir/output/$phage_folder/1* $phage_directory
+	mv $script_dir/output/$phage_folder/2* $phage_directory
 	
 	
 done
