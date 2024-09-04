@@ -30,9 +30,12 @@ for phage_directory in "$rd"/*; do
 	
 	clean_read_1=$(ls "$phage_directory"/clean_1.fastq.gz)
 	clean_read_2=$(ls "$phage_directory"/clean_2.fastq.gz)
-	
-	coverage=96241
-	
+
+	unzip $phage_directory/fastqc/clean_1_fastqc.zip -d $phage_directory/fastqc
+	coverage=$( awk 'NR==10 {print $3}' $phage_directory/fastqc/clean_1_fastqc/fastqc_data.txt | awk -F '-' '{avg=($1+ $2)/2; printf (100*169000)/avg}')
+	# echo $coverage
+	rm -rf $phage_directory/fastqc/clean_1_fastqc
+
 	seqtk sample -s 100 "$clean_read_1" "$coverage" > "$phage_directory"/sub_read_1.fastq
 	seqtk sample -s 100 "$clean_read_2" "$coverage" > "$phage_directory"/sub_read_2.fastq
 	
@@ -54,6 +57,7 @@ for phage_directory in "$rd"/*; do
 	echo Validating assembly
 	bbmap.sh ref="$phage_directory"/spades_result/contigs.fasta in1="$phage_directory"/sub_read_1.fastq in2="$phage_directory"/sub_read_2.fastq covstats="$phage_directory"/contig_covstats.txt out="$phage_directory"/contig_mapped.sam &>> "$phage_directory"/log/assembly_validation.txt
 	
+	echo $coverage
 	gzip "$phage_directory"/sub_read_1.fastq
 	gzip "$phage_directory"/sub_read_2.fastq
 	
