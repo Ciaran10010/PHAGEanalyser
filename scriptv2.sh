@@ -1,8 +1,22 @@
 #!/bin/bash
 
-source /home/ciaran/anaconda3/bin/activate main
-
 script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+
+source /home/$USER/miniforge3/bin/activate annotate
+
+if [ ! -e $script_dir/pharokka_db ];
+then 
+	install_databases.py -o $script_dir/pharokka_db
+fi
+
+source /home/$USER/miniforge3/bin/activate phold
+
+if [ ! -e $script_dir/phold_db ];
+then 
+	phold install -d $script_dir/pharokka_db
+fi
+
+source /home/$USER/miniforge3/bin/activate main
 
 echo Please input the directory of the raw Illumina reads.
 read rd
@@ -42,13 +56,13 @@ for phage_directory in "$rd"/*; do
 	gzip "$phage_directory"/sub_read_1.fastq
 	gzip "$phage_directory"/sub_read_2.fastq
 	
-	source /home/ciaran/anaconda3/bin/activate spades
+	source /home/$USER/miniforge3/bin/activate spades
 	
 	touch "$phage_directory"/log/spades.txt
 	echo Assembling the genome with SPAdes
 	spades.py --only-assembler --isolate -1 "$phage_directory"/sub_read_1.fastq.gz -2 "$phage_directory"/sub_read_2.fastq.gz -o "$phage_directory"/spades_result &>>"$phage_directory"/log/spades.txt
 	
-	source /home/ciaran/anaconda3/bin/activate main
+	source /home/$USER/miniforge3/bin/activate main
 	
 	gunzip "$phage_directory"/sub_read_1.fastq.gz
 	gunzip "$phage_directory"/sub_read_2.fastq.gz
@@ -82,14 +96,14 @@ EOF
 	python3 "$phage_directory"/extract_contig.py
 
 
-	source /home/ciaran/anaconda3/bin/activate sam
+	source /home/$USER/miniforge3/bin/activate sam
 	
 	touch "$phage_directory"/log/sam_sort_index.txt
 	echo Sorting and indexing the mapped reads for use with Pilon
 	samtools view -bS -F4 "$phage_directory"/contig_mapped.sam | samtools sort - -o "$phage_directory"/contig_mapped_sorted.bam &>> "$phage_directory"/log/sam_sort_index.txt
 	samtools index "$phage_directory"/contig_mapped_sorted.bam &>> "$phage_directory"/log/sam_sort_index.txt
 
-	source /home/ciaran/anaconda3/bin/activate main
+	source /home/$USER/miniforge3/bin/activate main
 	
 	touch "$phage_directory"/log/pilon.txt
 	echo Polishing assembly with Pilon
@@ -106,12 +120,12 @@ EOF
 		else
 			loop_number=$[loop_number+1]
 			bbmap.sh ref="$phage_directory"/pilon_read.fasta in1="$phage_directory"/sub_read_1.fastq in2="$phage_directory"/sub_read_2.fastq covstats="$phage_directory"/contig_covstats.txt out="$phage_directory"/contig_mapped.sam &>> "$phage_directory"/log/assembly_validation.txt
-			source /home/ciaran/anaconda3/bin/activate sam
+			source /home/$USER/miniforge3/bin/activate sam
 	
 			samtools view -bS -F4 "$phage_directory"/contig_mapped.sam | samtools sort - -o "$phage_directory"/contig_mapped_sorted.bam &>> "$phage_directory"/log/sam_sort_index.txt
 			samtools index "$phage_directory"/contig_mapped_sorted.bam &>> "$phage_directory"/log/sam_sort_index.txt
 
-			source /home/ciaran/anaconda3/bin/activate main
+			source /home/$USER/miniforge3/bin/activate main
 			
 			touch "$phage_directory"/log/pilon$loop_number.txt
 			echo Polishing assembly with Pilon
@@ -123,13 +137,13 @@ EOF
 		fi
 	done
 	
-	 source /home/ciaran/anaconda3/bin/activate sam
+	 source /home/$USER/miniforge3/bin/activate sam
 
 	apc.pl "$phage_directory"/pilon_read.fasta
 
 	mv permuted* "$phage_directory"
 
-	source /home/ciaran/anaconda3/bin/activate main
+	source /home/$USER/miniforge3/bin/activate main
 	
 	if [ -e $phage_directory/permuted.1.fa ];
 	then
@@ -141,13 +155,19 @@ EOF
 	echo 'BLASTing the genome (this will take some time)'
 	blastn -query "$phage_to_blast" -remote -db nr -out "$phage_directory"/blast_result.txt -outfmt 6 -evalue 1e-30
 
-	accession_number=$(awk -v line=3 'NR==3 {print $2}' "$phage_directory"/blast_result.txt)
-	echo $accession_number
-	datasets download virus genome accession "$accession_number" --include cds genome
+	for result_number in {1..20}
+	do
+		accession_number=$(awk -v line=$result_number 'NR==line {print $2}' "$phage_directory"/blast_result.txt)
+		datasets download virus genome accession "$accession_number" --include cds,genome
+		unzip -o ncbi_dataset.zip
+		if [ -e ncbi_dataset/data/cds.fna ];
+		then
+			mv ncbi_dataset "$phage_directory"
+			break
+		fi
+	done
 
-	mv ncbi_dataset.zip "$phage_directory"
 
-	unzip "$phage_directory"/ncbi_dataset.zip -d "$phage_directory"
 
 	tail -n +2 "$phage_directory"/ncbi_dataset/data/cds.fna > "$phage_directory"/ncbi_dataset/data/processed_cds.fna
 
@@ -155,17 +175,35 @@ EOF
 
 	sed -n 1,"$first_gene_end"p "$phage_directory"/ncbi_dataset/data/processed_cds.fna > "$phage_directory"/first_gene.fasta
 
-	start_of_phage=$(blastn -outfmt "7 sstart" -query  "$phage_directory"/first_gene.fasta -subject "$phage_directory"/permuted.1.fa | grep -v '^#')
+	strand=$(blastn -outfmt "6 sstrand" -query "$phage_directory"/first_gene.fasta -subject "$phage_to_blast")
+	echo $strand
+
+	if [[ $strand == minus ]];
+	then
+
+	echo reversing DNA sequence of subject
+
+	cat > "$phage_directory"/reverse.py <<EOF
+from Bio import SeqIO
+for record in SeqIO.parse(open("$phage_to_blast"),'fasta'):
+    reverse_seq = str(record.seq.reverse_complement())
+    with open("$phage_to_blast","w") as out:
+        out.write('>' + record.id + '\n' + reverse_seq)
+EOF
+	python3 "$phage_directory"/reverse.py
+	fi
+
+	start_of_phage=$(blastn -outfmt "7 sstart" -query  "$phage_directory"/first_gene.fasta -subject "$phage_to_blast" | grep -v '^#')
 
 	cat > "$phage_directory"/reorder.py <<EOF
 
 from Bio import SeqIO
 
-for contig_record in SeqIO.parse(open('$phage_to_blast'), 'fasta'):
+for contig_record in SeqIO.parse(open("$phage_to_blast"), 'fasta'):
     contig = str(contig_record.seq)
 
-str1= contig[$start_of_phage:]
-str2= contig[:$start_of_phage]
+str1= contig[($start_of_phage -1):]
+str2= contig[:($start_of_phage -1)]
 str_final='>'+contig_record.id + '\n' + str1 + str2
 with open("$phage_directory/reordered_genome.fasta", "w") as out:
     out.write(str_final)
@@ -174,11 +212,11 @@ EOF
 
 	python3 "$phage_directory"/reorder.py
 
-	bbmap.sh ref="$phage_directory"/reordered_genome.fasta in1="$phage_directory"/clean_1.fastq in2="$phage_directory"/clean_2.fastq covstats="$phage_directory"/final_covstats.txt out="$phage_directory"/all_reads_contig_mapped.sam
+	bbmap.sh ref="$phage_directory"/reordered_genome.fasta in1="$phage_directory"/clean_1.fastq in2="$phage_directory"/clean_2.fastq covstats="$phage_directory"/final_covstats.txt out="$phage_directory"/all_reads_contig_mapped.sam -Xmx4g
 
-	source /home/ciaran/anaconda3/bin/activate sam
+	source /home/$USER/miniforge3/bin/activate sam
 	
-	samtools view -bS -F4 "$phage_directory"/all_reads_contig_mapped.sam | samtools sort - -o "$phage_directory"/all_reads_contig_mapped_sorted.bam
+	samtools view -bS -F4 "$phage_directory"/all_reads_contig_mapped.sam | samtools sort - -o "$phage_directory"/all_reads_contig_mapped_sorted.bam 
 	
 	samtools index "$phage_directory"/all_reads_contig_mapped_sorted.bam
 	
@@ -186,18 +224,25 @@ EOF
 	
 	samtools fastq "$phage_directory"/non_mapped_sorted.bam > "$phage_directory"/non_mapped_reads.fq
 	
-	source /home/ciaran/anaconda3/bin/activate main
+	source /home/$USER/miniforge3/bin/activate main
 	
 	pilon --genome "$phage_directory"/reordered_genome.fasta --frags "$phage_directory"/all_reads_contig_mapped_sorted.bam --output "$phage_directory"/final_genome --verbose --changes
 	
 	sed "1s/.*/>contig/" "$phage_directory"/final_genome.fasta > "$phage_directory"/prokka_input.fasta
 	
-	prokka --outdir "$phage_directory"/prokka --prefix genome --kingdom viruses "$phage_directory"/prokka_input.fasta
+	source /home/$USER/miniforge3/bin/activate annotate
+
+	pharokka.py -i "$phage_directory"/prokka_input.fasta -o "$phage_directory"/pharokka_output -d $script_dir/pharokka_db -t 12
+
+	source /home/$USER/miniforge3/bin/activate phold
+
+	phold run -i $phage_directory/pharokka_output/pharokka.gbk -o $phage_directory/phold_output -d $script_dir/phold_db -t 12
 
 	mkdir -p $script_dir/output/$phage_folder
 	mv $phage_directory/* $script_dir/output/$phage_folder
 	mv $script_dir/output/$phage_folder/1* $phage_directory
 	mv $script_dir/output/$phage_folder/2* $phage_directory
+	source /home/$USER/miniforge3/bin/activate main
 	
 	
 done
